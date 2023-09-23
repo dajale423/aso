@@ -1,0 +1,208 @@
+import os
+import sys
+import glob
+import numpy as np
+import pandas as pd
+import math
+import sys
+import random
+import pickle
+import dask.dataframe as dd
+from dask.distributed import Client, LocalCluster
+
+import csv
+
+sys.path.insert(0,'/home/djl34/lab_pd/bin')
+import genomic
+
+pd_data_dir = "/home/djl34/lab_pd/data"
+KL_data_dir = "/home/djl34/lab_pd/kl/data"
+scratch_dir = "/n/scratch3/users/d/djl34"
+
+vep = "/home/djl34/bin/ensembl-vep/vep"
+
+base_set = ["A", "C", "T", "G"]
+chrom_set = [str(x) for x in range(1, 23)]
+# chrom_set = ["22"]
+
+def get_mem_mb(wildcards, attempt):
+    return attempt * 20000
+
+wildcard_constraints:
+    chrom="\d+"
+    
+
+    
+##############################################################################################################################
+
+output_list = [os.path.join(scratch_dir, "downloads/whole_gene/" + chrom +"_split_" + str(split) + "_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf") for chrom in chrom_set for split in range(4)]
+
+
+header_list = []
+for chrom in range(1, 11):
+    for i in range(8):
+        header_list.append(str(chrom) + "_split_" + str(i))
+for chrom in range(11, 21):
+    for i in range(4):
+        header_list.append(str(chrom) + "_split_" + str(i))
+for chrom in range(21, 23):
+    for i in range(2):
+        header_list.append(str(chrom) + "_split_" + str(i))
+
+rule all:
+    input:
+#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".vcf.bgz") for chrom in chrom_set],
+#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".vcf.bgz.tbi") for chrom in chrom_set],
+#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".MaxEntScan.txt") for chrom in chrom_set],
+        [os.path.join(scratch_dir, "downloads/whole_gene/" + header + "_rate_v5.2_TFBS_correction_wholegene.vcf") for chrom in chrom_set for header in header_list],
+        output_list[0],
+
+###################################################### get gnomAD #######################################################
+rule download_gnomad_v2:
+    input:
+    output:
+        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.vcf.bgz")
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:
+        "wget -P /n/scratch3/users/d/djl34/downloads/gnomAD_v2/ https://storage.googleapis.com/gcp-public-data--gnomad/release/2.1.1/vcf/exomes/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz"
+        
+rule download_gnomad_v2_tbi:
+    input:
+    output:
+        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.vcf.bgz.tbi")
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:
+        "wget -P /n/scratch3/users/d/djl34/downloads/gnomAD_v2/ https://storage.googleapis.com/gcp-public-data--gnomad/release/2.1.1/vcf/exomes/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz.tbi"
+        
+rule run_vep_maxentscan:
+    input:
+        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.vcf.bgz")
+    output:
+        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.MaxEntScan.txt")
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:
+        """
+        module load gcc/6.2.0
+        module load perl/5.30.0
+        eval `perl -Mlocal::lib=~/perl5-O2`
+        {vep} --cache -i /home/djl34/scratch/downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz -o /home/djl34/scratch/downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.MaxEntScan.txt --fork 5 --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats
+        """
+         
+rule gnomAD_v3_to_tsv:
+    input:
+        os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.vcf.bgz")
+    output:
+        os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.tsv")
+    shell:        
+        "bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input} > {output}"
+        
+###################################################### get variants #######################################################
+
+rule make_regions_file:
+    input:
+        os.path.join(pd_data_dir, "biomart/ENSG_start_end_110.tsv"),
+    output:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}.tsv")
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=1,
+        mem_mb=2000
+    run:        
+        df = pd.read_csv(input[0], sep = "\t")
+        df = df[["Chromosome/scaffold name", "Gene start (bp)", "Gene end (bp)"]]
+        df = df[df["Chromosome/scaffold name"] == wildcards.chrom]
+        
+        df = df.sort_values("Gene start (bp)")
+        
+        if int(wildcards.chrom) < 11:
+            split_by = 8
+        elif int(wildcards.chrom) > 20:
+            split_by = 2
+        else:
+            split_by = 4
+        
+        df_split = np.array_split(df, split_by)
+        
+        df_split[int(wildcards.split)].to_csv(output[0], sep = "\t", index = None, header=False)
+
+rule download_vova_model:
+    input:
+#         os.path.join(pd_data_dir, "vova_model/{chrom}_rate_v5.2_TFBS_correction.gz")
+    output:
+        os.path.join(scratch_dir, "downloads/{chrom}_rate_v5.2_TFBS_correction_all.vcf.bgz"),
+        os.path.join(scratch_dir, "downloads/{chrom}_rate_v5.2_TFBS_correction_all.vcf.bgz.csi"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=25000
+    run:
+        output_filename_0 = output[0].split("/")[-1]
+        output_filename_1 = output[1].split("/")[-1]
+        
+        shell("wget -P /home/djl34/scratch/downloads/ http://genetics.bwh.harvard.edu/downloads/Vova/Roulette/{output_filename_0}")
+        shell("wget -P /home/djl34/scratch/downloads/ http://genetics.bwh.harvard.edu/downloads/Vova/Roulette/{output_filename_1}")
+        
+rule filter_out_intergenic_sites:
+    input:
+        vcf = os.path.join(scratch_dir, "downloads/{chrom}_rate_v5.2_TFBS_correction_all.vcf.bgz"),
+        regions_file = os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}.tsv")
+    output:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:        
+        "bcftools view -R {input.regions_file} -o {output} {input.vcf}"
+        
+rule run_vep_maxentscan_whole_gene:
+    input:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
+    output:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=20,
+        mem_mb=100000
+    shell:
+        """
+        module load gcc/6.2.0
+        module load perl/5.30.0
+        eval `perl -Mlocal::lib=~/perl5-O2`
+        {vep} --cache -i {input} -o {output} --fork 20 --vcf --canonical --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats
+        """
+        
+###################################################### set up Ensembl #######################################################
+
+rule download_ensembl_cache:
+    input:
+    output:
+        "/home/djl34/.vep/homo_sapiens_vep_110_GRCh38.tar.gz"
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:
+        """
+        open_perl5
+        cd $HOME/.vep
+        curl -O https://ftp.ensembl.org/pub/release-110/variation/indexed_vep_cache/homo_sapiens_vep_110_GRCh38.tar.gz
+        """
+        
