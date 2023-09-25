@@ -17,13 +17,14 @@ import genomic
 
 pd_data_dir = "/home/djl34/lab_pd/data"
 KL_data_dir = "/home/djl34/lab_pd/kl/data"
+aso_data_dir = "/home/djl34/lab_pd/aso/data"
 scratch_dir = "/n/scratch3/users/d/djl34"
 
 vep = "/home/djl34/bin/ensembl-vep/vep"
 
 base_set = ["A", "C", "T", "G"]
 chrom_set = [str(x) for x in range(1, 23)]
-# chrom_set = ["22"]
+chrom_set = ["22"]
 
 def get_mem_mb(wildcards, attempt):
     return attempt * 20000
@@ -35,27 +36,22 @@ wildcard_constraints:
     
 ##############################################################################################################################
 
-output_list = [os.path.join(scratch_dir, "downloads/whole_gene/" + chrom +"_split_" + str(split) + "_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf") for chrom in chrom_set for split in range(4)]
+## for maxentscan        
+# output_list = [os.path.join(scratch_dir, "downloads/whole_gene/" + header + "_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf") for header in header_list]
+
+# header_list = glob.glob(os.path.join(scratch_dir, "downloads/whole_gene/*_regions_split_*.tsv"))
+
+# header_list = [x.split(".")[0] for x in header_list]
+
+# output_list = [x + "_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt" for x in header_list]
 
 
-header_list = []
-for chrom in range(1, 11):
-    for i in range(8):
-        header_list.append(str(chrom) + "_split_" + str(i))
-for chrom in range(11, 21):
-    for i in range(4):
-        header_list.append(str(chrom) + "_split_" + str(i))
-for chrom in range(21, 23):
-    for i in range(2):
-        header_list.append(str(chrom) + "_split_" + str(i))
 
 rule all:
     input:
-#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".vcf.bgz") for chrom in chrom_set],
-#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".vcf.bgz.tbi") for chrom in chrom_set],
-#         [os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites." + chrom +".MaxEntScan.txt") for chrom in chrom_set],
-        [os.path.join(scratch_dir, "downloads/whole_gene/" + header + "_rate_v5.2_TFBS_correction_wholegene.vcf") for chrom in chrom_set for header in header_list],
-        output_list[0],
+        [os.path.join(aso_data_dir, "whole_gene/maxentscan/" + chrom + "/_metadata") for chrom in chrom_set],
+        [os.path.join(aso_data_dir, "whole_gene/LaBranchoR/" + chrom + "/_metadata") for chrom in chrom_set],
+        [os.path.join(aso_data_dir, "whole_gene/spliceai/" + chrom + "/_metadata") for chrom in chrom_set],
 
 ###################################################### get gnomAD #######################################################
 rule download_gnomad_v2:
@@ -108,13 +104,32 @@ rule gnomAD_v3_to_tsv:
     shell:        
         "bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input} > {output}"
         
-###################################################### get variants #######################################################
+###################################################### set up Ensembl #######################################################
+
+rule download_ensembl_cache:
+    input:
+    output:
+        "/home/djl34/.vep/homo_sapiens_vep_110_GRCh38.tar.gz"
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    shell:
+        """
+        open_perl5
+        cd $HOME/.vep
+        curl -O https://ftp.ensembl.org/pub/release-110/variation/indexed_vep_cache/homo_sapiens_vep_110_GRCh38.tar.gz
+        """
+        
+        
+###################################################### for MaxEntScan #######################################################
 
 rule make_regions_file:
     input:
         os.path.join(pd_data_dir, "biomart/ENSG_start_end_110.tsv"),
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}.tsv")
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_0.tsv")
     resources:
         partition="short",
         runtime="0-12:00",
@@ -127,16 +142,48 @@ rule make_regions_file:
         
         df = df.sort_values("Gene start (bp)")
         
-        if int(wildcards.chrom) < 11:
-            split_by = 8
-        elif int(wildcards.chrom) > 20:
-            split_by = 2
-        else:
-            split_by = 4
+        iterator = 0
         
-        df_split = np.array_split(df, split_by)
+        csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_"+ str(iterator)+".tsv"), 'w', newline='')
+        csvwriter = csv.writer(csvfile, delimiter='\t')
         
-        df_split[int(wildcards.split)].to_csv(output[0], sep = "\t", index = None, header=False)
+        total_length = 0
+        
+        for index, row in df.iterrows():
+            
+            chrom = row["Chromosome/scaffold name"]
+            start = row["Gene start (bp)"]
+            end = row["Gene end (bp)"]
+            
+            length = end - start
+            
+            while total_length + length > 1000000:
+                add = 1000000 - total_length
+                
+                new_end = start + add
+                
+                csvwriter.writerow([chrom, start, new_end])
+                
+                #move to new file
+                iterator += 1
+                csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_" + str(iterator)+ ".tsv"), 'w', newline='')
+                csvwriter = csv.writer(csvfile, delimiter='\t')
+                total_length = 0
+                
+                start = new_end + 1
+                length = end - start
+                
+            csvwriter.writerow([chrom, start, end])
+            
+            total_length += length
+            
+#             if total_length > 1000000:
+#                 total_length = 0
+#                 iterator += 1
+                
+#                 csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_" + str(iterator)+ ".tsv"), 'w', newline='')
+#                 csvwriter = csv.writer(csvfile, delimiter='\t')
+                        
 
 rule download_vova_model:
     input:
@@ -161,48 +208,168 @@ rule filter_out_intergenic_sites:
         vcf = os.path.join(scratch_dir, "downloads/{chrom}_rate_v5.2_TFBS_correction_all.vcf.bgz"),
         regions_file = os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}.tsv")
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
     resources:
         partition="short",
         runtime="0-12:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
+        cpus_per_task=1,
+        mem_mb=3000
     shell:        
         "bcftools view -R {input.regions_file} -o {output} {input.vcf}"
         
 rule run_vep_maxentscan_whole_gene:
     input:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
     resources:
         partition="short",
         runtime="0-12:00",
-        cpus_per_task=20,
-        mem_mb=100000
+        cpus_per_task=8,
+        mem_mb=32000
     shell:
         """
         module load gcc/6.2.0
         module load perl/5.30.0
         eval `perl -Mlocal::lib=~/perl5-O2`
-        {vep} --cache -i {input} -o {output} --fork 20 --vcf --canonical --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats
+        {vep} --cache --offline -i {input} -o {output} --fork 8 --vcf --canonical --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats --buffer_size 10000 --fasta /home/djl34/lab_pd/data/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna
         """
         
-###################################################### set up Ensembl #######################################################
-
-rule download_ensembl_cache:
+rule run_split_vep:
     input:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
     output:
-        "/home/djl34/.vep/homo_sapiens_vep_110_GRCh38.tar.gz"
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=1,
+        mem_mb=2000
+    shell:
+        """
+        bcftools +split-vep {input} -f '%CHROM\t%POS\t%REF\t%ALT\t%Consequence\t%Gene\t%Feature\t%MaxEntScan_alt\t%MaxEntScan_diff\t%MaxEntScan_ref\n' -s primary > {output}
+        """
+        
+rule make_parquet:
+    input:
+        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_0_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"),
+    output:
+        os.path.join(aso_data_dir, "whole_gene/maxentscan/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-12:00",
         cpus_per_task=5,
         mem_mb=get_mem_mb
-    shell:
-        """
-        open_perl5
-        cd $HOME/.vep
-        curl -O https://ftp.ensembl.org/pub/release-110/variation/indexed_vep_cache/homo_sapiens_vep_110_GRCh38.tar.gz
-        """
-        
+    run:
+        with Client() as client:
+            names_list = ['CHROM', 'POS', 'REF', 'ALT', 'Consequence', 'Gene', 'Feature', 'MaxEntScan_alt', 'MaxEntScan_diff', 'MaxEntScan_ref']
+            ddf = dd.read_csv(os.path.join(scratch_dir, "downloads/whole_gene/"+ wildcards.chrom + "_regions_split_*_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"), sep = "\t", names = names_list, dtype={'MaxEntScan_alt': 'object','MaxEntScan_diff': 'object', 'MaxEntScan_ref': 'object'})
+            
+            ddf= ddf.rename(columns={"POS": "Pos", "REF": "Allele_ref", "ALT": "Allele"})
+            
+            ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+            
+###################################################### for LaBranchoR #######################################################
+
+rule add_LaBranchoR:
+    input:
+        rate = os.path.join(aso_data_dir, "whole_gene/maxentscan/{chrom}/_metadata"),
+        labranchor = aso_data_dir + "/LaBranchoR/lstm.gencode_v19.hg19.top.bed",
+    output:
+        os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{chrom}/_metadata"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
+            
+            ddf = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+            
+            names_list = ["Chrom", "start", "end", "LaBranchoR_start", "LaBranchoR_score", "strand"]
+            df = pd.read_csv(aso_data_dir + "/LaBranchoR/lstm.gencode_v19.hg19.top.bed", sep = "\t", names = names_list)
+            df = df[df["Chrom"] == "chr" + wildcards.chrom]
+            
+            df["hg38_start"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["start"]), axis=1)
+            df["hg38_end"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["end"]), axis=1)
+            
+            #b/c it is 0 based
+            def get_range(start, end):
+                return range(start + 1, end + 1)
+            
+            df = df[df["hg38_start"].isna() == False]
+            df = df[df["hg38_end"].isna() == False]
+            
+            df["hg38_start"] = df["hg38_start"].astype(int)
+            df["hg38_end"] = df["hg38_end"].astype(int)
+            
+            df['hg38_min'] = df[['hg38_start','hg38_end']].min(axis=1)
+            df['hg38_max'] = df[['hg38_start','hg38_end']].max(axis=1)
+
+            
+            df["Pos"] = df.apply(lambda row: get_range(row["hg38_min"],row["hg38_max"]), axis=1)
+            df = df.explode('Pos')
+            df["Pos"] = df["Pos"].astype(int)
+            
+            ddf = ddf.merge(df[["Pos", "LaBranchoR_start", "LaBranchoR_score"]], on = "Pos", how = "left")
+            
+            ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True) 
+            
+###################################################### for spliceAI #######################################################
+
+rule add_spliceAI:
+    input:
+        rate = os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{chrom}/_metadata"),
+        spliceai = os.path.join(KL_data_dir, "spliceai/spliceai_delta_scores.raw.snv.chrom_{chrom}/_metadata")
+    output:
+        os.path.join(aso_data_dir, "whole_gene/spliceai/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/spliceai/intermediary_{chrom}/_metadata"),
+    resources:
+        partition="short",
+        runtime="0-12:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
+            
+            rate = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+            
+            spliceai_files = glob.glob("/".join(input.spliceai.split("/")[:-1]) + "/*.parquet")
+            
+            first = True
+            
+            for filename in spliceai_files:
+                print(filename)
+                
+                if not first:
+                    rate = dd.read_parquet("/".join(output[1].split("/")[:-1]) + "/")
+#                     rate.rename(columns={'DS': 'DS_x', 'spliceai_gene': 'spliceai_gene_x', 'DS_AL': 'DS_AL_x', 'DS_DL': 'DS_DL_x', 'DS_AG': 'DS_AG_x', 'DS_DG': 'DS_DG_x'})  
+                
+                sa = pd.read_parquet(filename)
+                rate = rate.merge(sa, on = ["Pos", "Allele"], how = "left", suffixes = ("", "_x"))
+                
+                
+                if not first:
+                    column_names = ['DS', 'DS_AL', 'DS_DL', 'DS_AG', 'DS_DG']
+                    for column in column_names:
+                        rate[column] = rate[column].fillna(0)
+                        rate[column + "_x"] = rate[column + "_x"].fillna(0)
+
+                        rate[column] = rate[column] + rate[column + "_x"]
+
+                        rate = rate.drop(column + "_x", axis=1)  
+
+
+                    rate["spliceai_gene"] = rate["spliceai_gene"].fillna("")
+                    rate["spliceai_gene_x"] = rate["spliceai_gene_x"].fillna("")
+                    rate["spliceai_gene"] = rate["spliceai_gene"] + rate["spliceai_gene_x"]
+
+                    rate = rate.drop("spliceai_gene_x", axis=1)  
+
+                rate.to_parquet("/".join(output[1].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+                first = False
+                
+            rate = rate.repartition(partition_size="3GB")            
+            rate.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+            
