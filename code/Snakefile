@@ -47,14 +47,20 @@ per_generation_factor = 1.015 * 10 **-7
 ##############################################################################################################################
 
 type_list = ["ad_lof", "sd_lof", "ar_lof"]
+# type_list = ["sd_lof"]
 
-filename_list = [os.path.join(aso_data_dir, "genes_category/{type}/variants/{chrom}/_metadata"),
-                os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata")]
+
+filename_list = [os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata"),
+                os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata")]
 filename_list = [filename.format(chrom = chrom, type = type) for chrom in all_chrom_set for type in type_list for filename in filename_list]
 
 rule all:
     input:
-        filename_list
+        filename_list,
+        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof")
 
 ###################################################### get gnomAD #######################################################
 rule download_gnomad_v2:
@@ -522,8 +528,49 @@ rule clinvar_to_tsv:
             
             
 #             ddf = ddf.drop_duplicates(["Pos", "Allele", "Gene"])
+
+rule download_gnomad_v4:
+    input:
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=1,
+        mem_mb=500
+    output:
+        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz")
+    shell:
+        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz"
+                
+rule download_gnomad_v4_tbi:
+    input:
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=1,
+        mem_mb=500
+    output:
+        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
+    shell:
+        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz.tbi"
+                
+        
             
-            
+rule run_split_vep_gnomAD_v4:
+    input:
+        vcf = os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz"),
+        tbi = os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
+    output:
+        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.tsv")
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=1,
+        mem_mb=1000
+    shell:
+        """
+        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input.vcf}  > {output}
+        """
+                    
 ##########################################################################################################################
         
 ######################################################filter genes #######################################################
@@ -711,9 +758,9 @@ rule gene_to_variants:
         
 rule process_file:
     input:
-        rate = os.path.join(aso_data_dir, "genes_category/{type}/{chrom}/_metadata"),
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/variants/{chrom}/_metadata"),
     output:
-        os.path.join(scratch_dir, "aso/{type}_process/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "genes_category/{type}/process/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-1:00",
@@ -738,11 +785,64 @@ rule process_file:
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", 
                                 write_metadata_file = True, 
                                 schema={"MaxEntScan_alt": pa.float64(), "MaxEntScan_ref": pa.float64()})
+
+rule add_AF:
+    input:
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/process/{chrom}/_metadata"),
+        add = os.path.join(KL_data_dir, "whole_genome/filtered/{chrom}/_metadata")
+    output:
+        os.path.join(aso_data_dir, "genes_category/{type}/AF/{chrom}/_metadata")
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb_AF
+    run:
+        with Client() as client:
+            variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
+
+            ddf = dd.read_parquet("/".join(input[1].split("/")[:-1]) + "/")
+
+            variants["Pos"] = variants["Pos"].astype('Int64')
+
+            variants = variants.merge(ddf[["Pos", "Allele", 'AF']], on = ["Pos", "Allele"], how = "left")
+
+            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+
+rule add_clinVar:
+    input:
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/AF/{chrom}/_metadata"),
+        clinvar = aso_data_dir + "/clinvar/clinvar_{chrom}.tsv"
+    output:
+        os.path.join(aso_data_dir, "aso/genes_category/{type}/clinvar/{chrom}/_metadata"),
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb_AF
+    run:
+        with Client() as client:
+            variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
+            
+            variants = variants[~variants["mu"].isna()]
+
+            names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'CLNDN', 'CLNDISDB', 'CLNSIG', 'CLNSIGCONF', 'GENEINFO']
+            clinvar = pd.read_csv(input.clinvar, sep = "\t", names = names_list)
+            clinvar["Pos"] = clinvar["Pos"].astype('Int64')
+            
+            clinvar = clinvar.drop("Chrom", axis = 1)
+            variants = variants.merge(clinvar, on = ["Pos", "Allele_ref", "Allele"], how = "left")
+
+            variants = variants.repartition(partition_size="3GB")  
+
+            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+
+
             
 ############################################### calculate splicing probability ###############################################       
 rule add_splicing_info:
     input:
-        os.path.join(scratch_dir, "aso/{type}_process/{chrom}/_metadata")
+        os.path.join(aso_data_dir, "aso/genes_category/{type}/clinvar/{chrom}/_metadata")
     output:
         os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata")
     resources:
@@ -754,50 +854,44 @@ rule add_splicing_info:
         with Client() as client:
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
 
+            variants["canonical_splice_site"] = variants["Consequence"].str.contains("splice_(acceptor|donor)_variant")
+
+            variants["spliceAI_loss_pass"] = (variants["DS_AL"] >= 0.1) | (variants["DS_DL"] >= 0.1)
+            variants["spliceAI_gain_pass"] = (variants["DS_AG"] >= 0.1) | (variants["DS_DG"] >= 0.1)
+            
+            variants["MaxEntScan_alt_low"] = (variants["MaxEntScan_alt"] < 2) | (variants["MaxEntScan_alt"] < 0.3 * variants["MaxEntScan_ref"])
+
             ## check whether it is a splice-destroying-variant
             ##  SpliceAI donor/acceptor loss score ≥ 0.1 at a canonical splice site) AND (MaxEntScan donor/ acceptor score with the ALT allele < MaxEntScan donor/acceptor score with the REF allele) AND [(MaxEntScan donor/acceptor score with the ALT allele < 2) OR (MaxEntScan donor/acceptor score with the ALT allele < 0.3 × MaxEntScan donor/acceptor score with the REF allele)].
-
-            variants["splice_destroying_severe"] = 1
-            variants["splice_destroying_severe"] = variants["splice_destroying_severe"].where((variants["Consequence"].str.contains("splice_acceptor_variant")) | (variants["Consequence"].str.contains("splice_donor_variant")) , 0)
-            variants["splice_destroying_severe"] = variants["splice_destroying_severe"].where((variants["DS_AL"] >= 0.1) | (variants["DS_DL"] >= 0.1) , 0)
-            variants["splice_destroying_severe"] = variants["splice_destroying_severe"].where(variants["MaxEntScan_alt"] < variants["MaxEntScan_ref"] , 0)
-            variants["splice_destroying_severe"] = variants["splice_destroying_severe"].where((variants["MaxEntScan_alt"] < 2) | (variants["MaxEntScan_alt"] < 0.3 * variants["MaxEntScan_ref"]) , 0)
+            
+            variants["splice_destroying_severe"] = (variants["canonical_splice_site"] & variants["spliceAI_loss_pass"] & 
+                                                    (variants["MaxEntScan_alt"] < variants["MaxEntScan_ref"]) &
+                                                    variants["MaxEntScan_alt_low"])
+                                                    
 
             ## check whether it is a splice-destroying-variant moderate
             ## i) NOT severe (as defined above), (ii) SpliceAI donor/ acceptor loss score at a canonical splice site ≥ 0.1, AND (iii) [MaxEntScan donor/acceptor score with the ALT allele at the site < MaxEntScan donor/acceptor score with the REF allele at the site, MaxEntScan donor/ acceptor score with the ALT allele at the site ≥ 2, AND MaxEntScan donor/acceptor score with the ALT allele at the site ≥ 0.3 × MaxEntScan donor/acceptor score with the REF allele at the site] OR [The variant is ≤3 nt away from the LaBranchoR-predicted branchpoint OR the distance between the LaBranchoR-predicted branchpoint and the site is changed by >3 nt by the variant].
 
-            variants["splice_destroying_moderate"] = 1
-            variants["splice_destroying_moderate"] = variants["splice_destroying_moderate"].where((variants["Consequence"].str.contains("splice_acceptor_variant")) | (variants["Consequence"].str.contains("splice_donor_variant")) , 0)
-            variants["splice_destroying_moderate"] = variants["splice_destroying_moderate"].where((variants["splice_destroying_severe"] == 0), 0)
+            variants["LaBranchoR_distance"] = variants["LaBranchoR_distance"].fillna(0)
+            variants["LaBranchoR_close"] = (variants["LaBranchoR_distance"] <= 3) & (variants["LaBranchoR_distance"] >= -3)
 
-            variants["splice_destroying_moderate"] = variants["splice_destroying_moderate"].where((variants["DS_AL"] >= 0.1) | (variants["DS_DL"] >= 0.1) , 0)
-
-            variants["splice_destroying_moderate"] = variants["splice_destroying_moderate"].where(((variants["MaxEntScan_alt"] < variants["MaxEntScan_ref"]) & (variants["MaxEntScan_alt"] > 2) & (variants["MaxEntScan_alt"] > 0.3 * variants["MaxEntScan_ref"])) | (((variants["LaBranchoR_distance"] <= 3) & (variants["LaBranchoR_distance"] >= -3))) , 0)
-
+            variants["splice_destroying_moderate"] = (~variants["splice_destroying_severe"] & 
+                                                      variants["canonical_splice_site"] & variants["spliceAI_loss_pass"] &
+                                                      (((variants["MaxEntScan_alt"] < variants["MaxEntScan_ref"]) &
+                                                      ~variants["MaxEntScan_alt_low"]) | variants["LaBranchoR_close"]))
+            
             ##check whether misplicing gain
             ##spliceAI donor/ acceptor gain score at a non-canonical site ≥ 0.1 AND (ii) MaxEntScan donor/acceptor score with the ALT allele at the site ≥ 2.
 
-            variants["misplicing_gain"] = 1
-            variants["misplicing_gain"] = variants["misplicing_gain"].where(variants["Consequence"].str.contains("splice_acceptor_variant") == False , 0)
-            variants["misplicing_gain"] = variants["misplicing_gain"].where(variants["Consequence"].str.contains("splice_donor_variant") == False , 0)
-            variants["misplicing_gain"] = variants["misplicing_gain"].where((variants["DS_AG"] >= 0.1) | (variants["DS_DG"] >= 0.1) , 0)
-            variants["misplicing_gain"] = variants["misplicing_gain"].where(variants["MaxEntScan_alt"] > 2 , 0)
-
-
+            variants["misplicing_gain"] = (~variants["canonical_splice_site"] & variants["spliceAI_gain_pass"]
+                                          & (variants["MaxEntScan_alt"] >= 2))
             #(2) Exon skipping or intron retention (skipping or retention): SpliceAI donor/acceptor loss score at any canonical site ≥ 0.1 without an accompanying gain of mis-splicing by SpliceAI (donor/acceptor gain score < 0.1 at any non-canonical splice site).
 
-            variants["exon_skipping"] = 1
-            variants["exon_skipping"] = variants["exon_skipping"].where((variants["Consequence"].str.contains("splice_acceptor_variant")) | (variants["Consequence"].str.contains("splice_donor_variant")) , 0)
-
-            variants["exon_skipping"] = variants["exon_skipping"].where((variants["DS_AL"] > 0.1) | (variants["DS_DL"] > 0.1) , 0)
-
+            variants["exon_skipping"] = (variants["canonical_splice_site"] & variants["spliceAI_loss_pass"])
+            
             variants_misplicing_gain = variants[variants["misplicing_gain"] == 1]
-
             per_generation_factor = 1.015 * 10 **-7
-            
             variants_misplicing_gain = variants_misplicing_gain[["Gene", "mu"]].compute()
-            
-#             variants_misplicing_gain = variants_misplicing_gain.to_dict()
             
             variants_misplicing_gain_rates = pd.DataFrame(variants_misplicing_gain.groupby("Gene")["mu"].sum()).reset_index()
 
@@ -807,108 +901,59 @@ rule add_splicing_info:
             variants_merged = variants.merge(variants_misplicing_gain_rates[["Gene", "exon_skipping_rate"]], on = "Gene")
 
             variants_merged.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
-            
-############################################### more analysis for AR ###############################################       
 
-rule damage_protein:
-    input:
-        os.path.join(aso_data_dir, "genes_category/{type}_splice/{chrom}/_metadata"),
-    output:
-        os.path.join(aso_data_dir, "genes_category/{type}_protein_damage/{chrom}/_metadata"),
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=get_mem_mb_small
-    run:
-        with Client() as client:
-            variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
-            
-            variants["protein_coding_severe"] = 1
-            variants["protein_coding_severe"] = variants["protein_coding_severe"].where((variants["Consequence"].str.contains("start_lost")) | (variants["Consequence"].str.contains("stop_gained")), 0)
-            
-            variants["protein_coding_missense"] = 1
-            variants["protein_coding_missense"] = variants["protein_coding_missense"].where((variants["REVEL"] > 0.5), 0)
 
-            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
-            
-rule download_gnomad_v4:
+rule damage_protein_and_others:
     input:
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=500
+        os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata")
     output:
-        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz")
-    shell:
-        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz"
-                
-rule download_gnomad_v4_tbi:
-    input:
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=500
-    output:
-        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
-    shell:
-        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz.tbi"
-                
-        
-            
-rule run_split_vep_gnomAD_v4:
-    input:
-        vcf = os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz"),
-        tbi = os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
-    output:
-        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.tsv")
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=1000
-    shell:
-        """
-        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input.vcf}  > {output}
-        """
-        
-rule add_AF:
-    input:
-        rate = os.path.join(aso_data_dir, "genes_category/{type}_protein_damage/{chrom}/_metadata"),
-        add = os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.tsv")
-    output:
-        os.path.join(aso_data_dir, "genes_category/{type}_AF/{chrom}/_metadata")
+        os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-1:00",
         cpus_per_task=5,
-        mem_mb=get_mem_mb_AF
+        mem_mb=get_mem_mb
     run:
         with Client() as client:
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
 
-            names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'filter_gnomADv4', 'AC_gnomADv4', 'AN_gnomADv4', 'AF_gnomADv4']
-            ddf = dd.read_csv(input.add, sep = "\t", names = names_list, dtype={'AF_gnomADv4': 'object'})
-    #             ddf = ddf.set_index(['Pos', 'Allele_ref', 'Allele'])
+            variants = variants.drop(["DS_AG", "DS_AL", "DS_DG", "DS_DL"], axis = 1)
 
-            ddf['AF_gnomADv4'] = ddf['AF_gnomADv4'].replace(".", 0)
-            ddf['AF_gnomADv4'] = ddf['AF_gnomADv4'].fillna(0)
-            ddf['AF_gnomADv4'] = ddf['AF_gnomADv4'].astype(float)
+            ## filter for common variants
+            variants["common_variant_.1%"] = (variants["AF"] > 0.001)
+            variants["common_variant_1%"] = (variants["AF"] > 0.01)
+            
+            ## filter for benign variants in clinvar
+            variants["clinvar_benign"] = (variants["CLNSIG"].str.contains("benign")) | (variants["CLNSIGCONF"].str.contains("benign"))
+            variants = variants[~variants["clinvar_benign"]]
 
-            variants = variants.merge(ddf[["Pos", "Allele", "filter_gnomADv4", 'AF_gnomADv4']], on = ["Pos", "Allele"], how = "left")
+            #protein_coding severity
+            variants["protein_coding_severe"] = variants["Consequence"].str.contains("(start_lost|stop_gained)")
+            variants["protein_coding_severe_missense"] = (variants["REVEL"] > 0.5)
 
+            # get lof severe and moderate
+            variants["lof_severe"] = variants["splice_destroying_severe"] | variants["protein_coding_severe"] | variants["protein_coding_severe_missense"]
+
+            variants["lof_moderate"] = variants["splice_destroying_moderate"] & ~variants["lof_severe"]
+
+            ##get probably_amenable variants
+            variants["probably_amenable"] = ~variants["lof_severe"] & ~variants["lof_moderate"] & variants["misplicing_gain"]
+
+            ##get possibly_amenable variants
+            variants["possibly_amenable_gain"] = variants["lof_moderate"] & variants["misplicing_gain"]
+            variants["possibly_amenable_skipping"] = ~variants["lof_severe"] & variants["exon_skipping"]
+
+            variants = variants.repartition(partition_size="3GB")  
+            
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
             
-#########################################=AR pergene calculation genes #######################################################
+
+######################################### pergene calculation for AD #######################################################
 rule AD_lof_pergene:
     input:
-        rate = os.path.join(aso_data_dir, "genes_category/ad_lof_AF/{chrom}/_metadata"),
-        clinvar = aso_data_dir + "/clinvar/clinvar_{chrom}.tsv"
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
     output:
-#         os.path.join(aso_data_dir, "genes_category/ad/pervariant_{chrom}.tsv"),
-        os.path.join(aso_data_dir, "genes_category/ad/pergene_{chrom}.tsv")
+        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_{chrom}.tsv")
     resources:
         partition="short",
         runtime="0-1:00",
@@ -918,67 +963,31 @@ rule AD_lof_pergene:
         with Client() as client:
             per_generation_factor = 1.015 * 10 **-7
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
-            
-            variants = variants[~variants["mu"].isna()]
 
-            ## filter for common variants
-            variants = variants[(variants["AF_gnomADv4"] < 0.001) | (variants["AF_gnomADv4"].isna())]
-            
-            names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'CLNDN', 'CLNDISDB', 'CLNSIG', 'CLNSIGCONF', 'GENEINFO']
-
-            clinvar = pd.read_csv(input.clinvar, sep = "\t", names = names_list)
-            
-            clinvar = clinvar.drop("Chrom", axis = 1)
-            variants = variants.merge(clinvar, on = ["Pos", "Allele_ref", "Allele"], how = "left")
-            
-            
-            
-            ## filter for benign variants in clinvar
-            variants = variants[(variants["CLNSIG"].isna()) | ((variants["CLNSIG"].str.contains("benign") == False) & (variants["CLNSIGCONF"].str.contains("benign") == False))]
-            
-            
-            # get lof severe and moderate
-            variants["lof_severe"] = 1
-            variants["lof_severe"] = variants["lof_severe"].where((variants["splice_destroying_severe"] == 1) |
-                                                                  (variants["protein_coding_severe"] == 1) |  
-                                                                  (variants["protein_coding_missense"] == 1))
-            
-            variants["lof_moderate"] = 1
-            variants["lof_moderate"] = variants["lof_moderate"].where(((variants["splice_destroying_moderate"] == 1)) & (variants["lof_severe"] != 1), 0)
-            
-            ##get probably_amenable variants
-            variants["probably_amenable"] = 1
-            variants["probably_amenable"] = variants["probably_amenable"].where((variants["lof_severe"] != 1) &
-                                                    (variants["lof_severe"] != 1) & (variants["lof_moderate"] != 1) & (variants["misplicing_gain"] == 1) , 0)
-            
-            ##get possibly_amenable variants
-            variants["possibly_amenable_gain"] = 1
-            variants["possibly_amenable_gain"] = variants["possibly_amenable_gain"].where((variants["lof_moderate"] == 1)& (variants["misplicing_gain"] == 1) , 0)
-            
-            variants["possibly_amenable_skipping"] = 1
-            variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"].where((variants["exon_skipping"] == 1) & (variants["lof_severe"] != 1))
+            variants = variants[~variants["common_variant_.1%"]]
             
             variants = variants[["Gene", "mu", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping", "exon_skipping_rate"]]
             
-            variants = variants[(variants["probably_amenable"] == 1) | (variants["possibly_amenable_gain"] == 1) | (variants["possibly_amenable_skipping"] == 1)].compute()
+            variants = variants[variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
             
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"].fillna(0)
+            
             variants["probably_amenable"] = variants["probably_amenable"] * variants["mu"] * per_generation_factor
             variants["possibly_amenable_gain"] = variants["possibly_amenable_gain"] * variants["mu"] * per_generation_factor
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"] * variants["exon_skipping_rate"] * variants["mu"] * per_generation_factor
 
-            
             variants_bygene = variants[["Gene", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping"]].groupby("Gene").sum()
             
             variants_bygene = variants_bygene.reset_index()
             
             variants_bygene.to_csv(output[0], sep = "\t", index = None)
 
-rule AD_lof_pergene_combine:
+
+rule pergene_combine:
     input:
-        [os.path.join(aso_data_dir, "genes_category/ad/pergene_" + chrom + ".tsv") for chrom in all_chrom_set]
+        [os.path.join(aso_data_dir, f"genes_category/{{type}}/pergene_{chrom}.tsv") for chrom in all_chrom_set]
     output:
-        os.path.join(aso_data_dir, "genes_category/ad/pergene_all.tsv")
+        os.path.join(aso_data_dir, "genes_category/{type}/pergene_all.tsv")
     resources:
         partition="short",
         runtime="0-1:00",
@@ -989,13 +998,13 @@ rule AD_lof_pergene_combine:
             ddf = dd.read_csv(input, sep = "\t")
             ddf.to_csv(output[0], sep = "\t", single_file = True, index = None)
             
+######################################### pergene calculation  #######################################################
+            
 rule AR_lof_pergene:
     input:
-        rate = os.path.join(aso_data_dir, "genes_category/ar_lof_AF/{chrom}/_metadata"),
-        clinvar = aso_data_dir + "/clinvar/clinvar_{chrom}.tsv"
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
     output:
-        os.path.join(aso_data_dir, "genes_category/ar/pervariant_{chrom}.tsv"),
-        os.path.join(aso_data_dir, "genes_category/ar/pergene_{chrom}.tsv")
+        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_{chrom}.tsv")
     resources:
         partition="short",
         runtime="0-1:00",
@@ -1006,86 +1015,48 @@ rule AR_lof_pergene:
             per_generation_factor = 1.015 * 10 **-7
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
             
-            
-            ## filter for common variants
-            variants = variants[(variants["AF_gnomADv4"] < 0.01) | (variants["AF_gnomADv4"].isna())]
-            
-            names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'CLNDN', 'CLNDISDB', 'CLNSIG', 'CLNSIGCONF', 'GENEINFO']
+            ## filter for common variants (less stringent than AD)
+            variants = variants[~variants["common_variant_1%"]]
 
-            clinvar = pd.read_csv(input.clinvar, sep = "\t", names = names_list)
-            
-            clinvar = clinvar.drop("Chrom", axis = 1)
-            variants = variants.merge(clinvar, on = ["Pos", "Allele_ref", "Allele"], how = "left")
-            
-            ## filter for benign variants in clinvar
-            variants = variants[(variants["CLNSIG"].isna()) | ((variants["CLNSIG"].str.contains("benign") == False) & (variants["CLNSIGCONF"].str.contains("benign") == False))]
-            
-            
-            variants["lof_severe"] = 1
-            variants["lof_severe"] = variants["lof_severe"].where((variants["splice_destroying_severe"] == 1) | 
-                                                    (variants["protein_coding_severe"] == 1)|(variants["CLNSIG"].isin(['Pathogenic', 'Likely_pathogenic', 'Pathogenic/Likely_pathogenic'])) , 0)
-            
-            
-            variants["lof_moderate"] = 1
-            variants["lof_moderate"] = variants["lof_moderate"].where(((variants["splice_destroying_moderate"] == 1) | (variants["protein_coding_missense"] == 1)) & (variants["lof_severe"] != 1), 0)
 
-            variants["lof_misplicing_gain"] = 1
-            variants["lof_misplicing_gain"] = variants["lof_misplicing_gain"].where(((variants["misplicing_gain"] == 1)) &
-                                                                      (variants["lof_severe"] != 1) & (variants["lof_moderate"] != 1), 0)
-
-            variants["lof_exon_skipping"] = 1
-            variants["lof_exon_skipping"] = variants["lof_exon_skipping"].where(((variants["exon_skipping"] == 1)) &
-                                                                      (variants["lof_severe"] != 1) & 
-                                                                                (variants["lof_moderate"] != 1) &
-                                                                                (variants["lof_misplicing_gain"] != 1), 0)
+            #get various rates
+            ## remove overlap between lof_moderate and exon_skipping
+            variants["lof_moderate"] = (variants["lof_moderate"]) & (~variants["possibly_amenable_skipping"])
             
-            variants.to_csv(output[0], sep = "\t", index = None, single_file = True)
-
-            variants_lof_severe = variants[variants["lof_severe"] == 1].compute()
-
-            variants_lof_severe = variants_lof_severe[["Gene", "mu", "AF_gnomADv4"]].groupby("Gene").sum().reset_index()
-            variants_lof_severe["rate_pergen_lof_severe"] = variants_lof_severe["mu"] * per_generation_factor
-            variants_lof_severe = variants_lof_severe.rename({"AF_gnomADv4": "AF_gnomADv4_lof_severe"}, axis = 1)
-
-            variants_lof_moderate = variants[variants["lof_moderate"] == 1].compute()
-
-            variants_lof_moderate = variants_lof_moderate[["Gene", "mu", "AF_gnomADv4"]].groupby("Gene").sum().reset_index()
-            variants_lof_moderate["rate_pergen_lof_moderate"] = variants_lof_moderate["mu"] * per_generation_factor
-            variants_lof_moderate = variants_lof_moderate.rename({"AF_gnomADv4": "AF_gnomADv4_lof_moderate"}, axis = 1)
+            variants["mu"] = variants["mu"].where(~variants["possibly_amenable_skipping"], variants["mu"] * variants["exon_skipping_rate"])
+            variants["mu"] = variants["mu"] * per_generation_factor
             
+            variants_lof_severe = variants[variants["lof_severe"]].compute()
+            variants_lof_severe = variants_lof_severe[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
 
-            variants_lof_misplicing_gain = variants[variants["lof_misplicing_gain"] == 1].compute()
-            variants_lof_misplicing_gain = variants_lof_misplicing_gain[["Gene", "mu", "AF_gnomADv4"]].groupby("Gene").sum().reset_index()
-            variants_lof_misplicing_gain["rate_pergen_lof_misplicing_gain"] = variants_lof_misplicing_gain["mu"] * per_generation_factor
-            variants_lof_misplicing_gain = variants_lof_misplicing_gain.rename({"AF_gnomADv4": "AF_gnomADv4_misplicing_gain"}, axis = 1)
-
-            variants_exon_skipping = variants[variants["exon_skipping"] == 1].compute()
-            variants_exon_skipping["mu"] =  variants_exon_skipping["mu"] * variants_exon_skipping["exon_skipping_rate"]
-            variants_exon_skipping = variants_exon_skipping[["Gene", "mu", "AF_gnomADv4"]].groupby("Gene").sum().reset_index()
-            variants_exon_skipping["rate_pergen_exon_skipping"] = variants_exon_skipping["mu"] * per_generation_factor
-            variants_exon_skipping = variants_exon_skipping.rename({"AF_gnomADv4": "AF_gnomADv4_exon_skipping"}, axis = 1)
-
+            variants_lof_moderate = variants[variants["lof_moderate"]].compute()
+            variants_lof_moderate = variants_lof_moderate[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
             
+            variants_lof_probably_amenable = variants[variants["probably_amenable"]].compute()
+            variants_lof_probably_amenable = variants_lof_probably_amenable[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
+
+            variants_possibly_amenable_skipping = variants[variants["possibly_amenable_skipping"]].compute()
+            variants_possibly_amenable_skipping = variants_possibly_amenable_skipping[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
+          
             
-            variants_all = variants_lof_severe[["Gene", "rate_pergen_lof_severe", "AF_gnomADv4_lof_severe"]].merge(variants_lof_moderate[["Gene", "rate_pergen_lof_moderate", "AF_gnomADv4_lof_moderate"]], on = "Gene", how = "outer")
-            variants_all = variants_all.merge(variants_lof_misplicing_gain[["Gene", "rate_pergen_lof_misplicing_gain", "AF_gnomADv4_misplicing_gain"]], on = "Gene", how = "outer")
-            variants_all = variants_all.merge(variants_exon_skipping[["Gene", "rate_pergen_exon_skipping", "AF_gnomADv4_exon_skipping"]], on = "Gene", how = "outer")
+            variants_all = variants_lof_severe.merge(variants_lof_moderate, on = "Gene", how = "outer", suffixes=('_lof_severe', '_lof_moderate'))
+            variants_all = variants_all.merge(variants_lof_probably_amenable, on = "Gene", how = "outer")
+            variants_all = variants_all.merge(variants_possibly_amenable_skipping, on = "Gene", how = "outer", suffixes=('_lof_probably_amenable', '_possibly_amenable_skipping'))
 
             variants_all = variants_all.fillna(0)
+
+            for tail in ["_lof_severe", "_lof_moderate", "_lof_probably_amenable", "_possibly_amenable_skipping"]:
+                variants_all[f"total_rate{tail}"] = variants_all[f"mu{tail}"] + variants_all[f"AF{tail}"]
+
+            ## assume 0.5 penetrance
+            variants_all["total_lof_rate"] = variants_all["total_rate_lof_severe"] + 0.5 * variants_all["total_rate_lof_moderate"] + 0.5 *variants_all["total_rate_lof_probably_amenable"]+ 0.5 *variants_all["total_rate_possibly_amenable_skipping"]
+
+            variants_all["comp_het_probably_amenable"] = variants_all["total_lof_rate"]**2 - (variants_all["total_rate_lof_severe"] + 0.5* variants_all["total_rate_lof_moderate"] +0.5*  variants_all["total_rate_possibly_amenable_skipping"])**2
+
+            variants_all["comp_het_possibly_amenable_skipping"] = variants_all["total_lof_rate"]**2 - (variants_all["total_rate_lof_severe"] +0.5*  variants_all["total_rate_lof_moderate"] + 0.5* variants_all["total_rate_lof_probably_amenable"])**2
             
-            variants_all["total_rate_lof_severe"] = variants_all["rate_pergen_lof_severe"] + variants_all["AF_gnomADv4_lof_severe"]
-            variants_all["total_rate_lof_moderate"] = variants_all["rate_pergen_lof_moderate"] + variants_all["AF_gnomADv4_lof_moderate"]
-            variants_all["total_rate_lof_misplicing_gain"] = variants_all["rate_pergen_lof_misplicing_gain"] + variants_all["AF_gnomADv4_misplicing_gain"]
-            variants_all["total_rate_exon_skipping"] = variants_all["rate_pergen_exon_skipping"] + variants_all["AF_gnomADv4_exon_skipping"]
-
-
-            variants_all["total_lof_rate"] = variants_all["total_rate_lof_severe"] + 0.5 * variants_all["total_rate_lof_moderate"] + 0.5 *variants_all["total_rate_lof_misplicing_gain"]+ 0.5 *variants_all["total_rate_exon_skipping"]
-
-            variants_all["comp_het_misplicing_gain"] = variants_all["total_lof_rate"]**2 - (variants_all["total_rate_lof_severe"] + 0.5* variants_all["total_rate_lof_moderate"] +0.5*  variants_all["total_rate_exon_skipping"])**2
-
-            variants_all["comp_het_exon_skip"] = variants_all["total_lof_rate"]**2 - (variants_all["total_rate_lof_severe"] +0.5*  variants_all["total_rate_lof_moderate"] + 0.5* variants_all["total_rate_lof_misplicing_gain"])**2
             
-            variants_all.to_csv(output[1], sep = "\t", index = None)
+            variants_all.to_csv(output[0], sep = "\t", index = None)
 
             
             
