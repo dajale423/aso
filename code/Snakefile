@@ -22,11 +22,6 @@ scratch_dir = "/n/scratch/users/d/djl34"
 
 vep = "/home/djl34/bin/ensembl-vep/vep"
 
-base_set = ["A", "C", "T", "G"]
-all_chrom_set = [str(x) for x in range(1, 23)]
-# chrom_set = ["13","18"]
-# chrom_set = 
-
 factor = 1
 
 def get_mem_mb(wildcards, attempt):
@@ -43,49 +38,42 @@ wildcard_constraints:
     
 per_generation_factor = 1.015 * 10 **-7
 
+include: "/home/djl34/kl_git/preprocessing/download/Snakefile"
+
+base_set = ["A", "C", "T", "G"]
+all_chrom_set = [str(x) for x in range(1, 23)]
+chrom_set = ["3"]
+
+print(chrom_set)
 
 ##############################################################################################################################
 
 type_list = ["ad_lof", "sd_lof", "ar_lof"]
-# type_list = ["sd_lof"]
+type_list = ["ad_lof", "ar_lof"]
 
 
-filename_list = [os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata"),
-                os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata")]
-filename_list = [filename.format(chrom = chrom, type = type) for chrom in all_chrom_set for type in type_list for filename in filename_list]
+filename_list = [os.path.join(aso_data_dir, "genes_category/{type}/biomart/{chrom}.tsv"),
+                 os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf"),
+                 os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
+                 os.path.join(aso_data_dir, "whole_gene/revel/{type}/{chrom}/_metadata")]
+
+filename_list = [filename.format(type = type, chrom = chrom) for filename in filename_list for chrom in chrom_set for type in type_list]
+
+print(chrom_set)
+
+# os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf")
 
 rule all:
     input:
         filename_list,
-        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof")
+        # os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
+
 
 ###################################################### get gnomAD #######################################################
-rule download_gnomad_v2:
-    input:
-    output:
-        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.vcf.bgz")
-    resources:
-        partition="short",
-        runtime="0-12:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
-    shell:
-        "wget -P /n/scratch3/users/d/djl34/downloads/gnomAD_v2/ https://storage.googleapis.com/gcp-public-data--gnomad/release/2.1.1/vcf/exomes/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz"
-        
-rule download_gnomad_v2_tbi:
-    input:
-    output:
-        os.path.join(scratch_dir, "downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{chrom}.vcf.bgz.tbi")
-    resources:
-        partition="short",
-        runtime="0-12:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
-    shell:
-        "wget -P /n/scratch3/users/d/djl34/downloads/gnomAD_v2/ https://storage.googleapis.com/gcp-public-data--gnomad/release/2.1.1/vcf/exomes/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz.tbi"
         
 rule run_vep_maxentscan:
     input:
@@ -105,13 +93,13 @@ rule run_vep_maxentscan:
         {vep} --cache -i /home/djl34/scratch/downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.vcf.bgz -o /home/djl34/scratch/downloads/gnomAD_v2/gnomad.exomes.r2.1.1.sites.{wildcards.chrom}.MaxEntScan.txt --fork 5 --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats
         """
          
-rule gnomAD_v3_to_tsv:
-    input:
-        os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.vcf.bgz")
-    output:
-        os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.tsv")
-    shell:        
-        "bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input} > {output}"
+# rule gnomAD_v3_to_tsv:
+#     input:
+#         os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.vcf.bgz")
+#     output:
+#         os.path.join(scratch_dir, "downloads/gnomad.genomes.v3.1.2.sites.chr{chrom}.tsv")
+#     shell:        
+#         "bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AC\t%AN\t%AF\n' {input} > {output}"
         
 ###################################################### set up Ensembl #######################################################
 
@@ -136,55 +124,63 @@ rule download_ensembl_cache:
 
 rule make_regions_file:
     input:
-        os.path.join(pd_data_dir, "biomart/ENSG_start_end_110.tsv"),
+        gene = os.path.join(aso_data_dir, "genes_category/{type}.tsv"),
+        biomart = os.path.join(pd_data_dir, "biomart/ENSG_start_end_110.tsv"),
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_0.tsv")
+        os.path.join(aso_data_dir, "genes_category/{type}/biomart/{chrom}.tsv")
     resources:
         partition="short",
         runtime="0-12:00",
         cpus_per_task=1,
         mem_mb=2000
     run:        
-        df = pd.read_csv(input[0], sep = "\t")
-        df = df[["Chromosome/scaffold name", "Gene start (bp)", "Gene end (bp)"]]
+        df = pd.read_csv(input.biomart, sep = "\t")
         df = df[df["Chromosome/scaffold name"] == wildcards.chrom]
-        
         df = df.sort_values("Gene start (bp)")
+        df = df.rename({"Gene stable ID": "Gene"}, axis = 1)
+
+        df_type = pd.read_csv(input.gene, sep = "\t")
+
+        df = df[df["Gene"].isin(list(df_type["Gene"].unique()))]
+
+        df = df[["Chromosome/scaffold name", "Gene start (bp)", "Gene end (bp)"]]
+        df.to_csv(output[0], sep = "\t", index = None, header = None)
+
+                             
+        # iterator = 0
         
-        iterator = 0
+        # csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_"+ str(iterator)+".tsv"), 'w', newline='')
+        # csvwriter = csv.writer(csvfile, delimiter='\t')
         
-        csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_"+ str(iterator)+".tsv"), 'w', newline='')
-        csvwriter = csv.writer(csvfile, delimiter='\t')
+        # total_length = 0
         
-        total_length = 0
-        
-        for index, row in df.iterrows():
+        # for index, row in df.iterrows():
             
-            chrom = row["Chromosome/scaffold name"]
-            start = row["Gene start (bp)"]
-            end = row["Gene end (bp)"]
+        #     chrom = row["Chromosome/scaffold name"]
+        #     start = row["Gene start (bp)"]
+        #     end = row["Gene end (bp)"]
             
-            length = end - start
+        #     length = end - start
             
-            while total_length + length > 1000000:
-                add = 1000000 - total_length
+        #     while total_length + length > 1000000:
+        #         add = 1000000 - total_length
                 
-                new_end = start + add
+        #         new_end = start + add
                 
-                csvwriter.writerow([chrom, start, new_end])
+        #         csvwriter.writerow([chrom, start, new_end])
                 
-                #move to new file
-                iterator += 1
-                csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_" + str(iterator)+ ".tsv"), 'w', newline='')
-                csvwriter = csv.writer(csvfile, delimiter='\t')
-                total_length = 0
+        #         #move to new file
+        #         iterator += 1
+        #         csvfile = open(os.path.join(scratch_dir, "downloads/whole_gene/" + str(wildcards.chrom) + "_regions_split_" + str(iterator)+ ".tsv"), 'w', newline='')
+        #         csvwriter = csv.writer(csvfile, delimiter='\t')
+        #         total_length = 0
                 
-                start = new_end + 1
-                length = end - start
+        #         start = new_end + 1
+        #         length = end - start
                 
-            csvwriter.writerow([chrom, start, end])
+        #     csvwriter.writerow([chrom, start, end])
             
-            total_length += length
+        #     total_length += length
             
 #             if total_length > 1000000:
 #                 total_length = 0
@@ -225,12 +221,53 @@ rule make_regions_file:
 #         mem_mb=3000
 #     shell:        
 #         "bcftools view -R {input.regions_file} -o {output} {input.vcf}"
+
+
+rule convert_to_vcf_file:
+    input:
+        region = os.path.join(aso_data_dir, "genes_category/{type}/biomart/{chrom}.tsv"),
+        mut_model = os.path.join(KL_data_dir, "whole_genome/mu_filtered/{chrom}/_metadata")
+    output:
+        os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf")
+    resources:
+        partition="short",
+        runtime="0-0:30",
+        cpus_per_task=1,
+        mem_mb=5000
+    run:
+        with Client() as client:
+
+            header = ["Chrom", "start", "end"]
+            df = pd.read_csv(input.region, sep = "\t", names = header)
+
+            if len(df) == 0:
+                df.to_csv(output[0], sep = "\t", index = None, header = None)
+            else:
+                def get_range(start, end):
+                    # since this seems like it's one-based
+                    return range(start, end + 1)
+    
+                df["Pos"] = df.apply(lambda row: get_range(row["start"],row["end"]), axis=1)
+                df = df.explode('Pos')
+                df["Pos"] = df["Pos"].astype(int)
+    
+                filename = input.mut_model
+                rate = dd.read_parquet(filename.split("_metadata")[0])
+                rate = rate[rate["Pos"].isin(list(df["Pos"]))]
+    
+                rate["Chrom"] = int(wildcards.chrom)
+                rate["Pos2"] = rate["Pos"]
+                rate["mut_type"] = rate["Allele_ref"] + "/" + rate["Allele"]
+                rate["strand"] = "+"
+                
+                rate[["Chrom", "Pos", "Pos2", "mut_type", "strand"]].to_csv(output[0], sep = "\t", index = None, header = None, single_file = True)
+            
         
 rule run_vep_maxentscan_whole_gene:
     input:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.vcf"),
+        os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf"),
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
+        os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
     resources:
         partition="short",
         runtime="0-12:00",
@@ -241,40 +278,43 @@ rule run_vep_maxentscan_whole_gene:
         module load gcc/6.2.0
         module load perl/5.30.0
         eval `perl -Mlocal::lib=~/perl5-O2`
-        {vep} --cache --offline -i {input} -o {output} --fork 8 --vcf --canonical --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats --buffer_size 10000 --fasta /home/djl34/lab_pd/data/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna
+        {vep} --cache --offline -i {input} -o {output} --fork 8 --vcf --canonical --plugin MaxEntScan,$HOME/.vep/Plugins/fordownload --force_overwrite --no_stats --buffer_size 10000 --fasta /home/djl34/lab_pd/data/fasta/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna
         """
         
 rule run_split_vep:
     input:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.vcf"),
+        os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
     output:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_{split}_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"),
+        os.path.join(scratch_dir, "aso/whole_gene/split_vep/{type}/{chrom}_primary_vep.txt"),
     resources:
         partition="short",
         runtime="0-12:00",
         cpus_per_task=1,
         mem_mb=2000
     shell:
+#-s primary picks all of the canonical variants
         """
         bcftools +split-vep {input} -f '%CHROM\t%POS\t%REF\t%ALT\t%MR\t%Consequence\t%Gene\t%Feature\t%MaxEntScan_alt\t%MaxEntScan_diff\t%MaxEntScan_ref\n' -s primary > {output}
         """
         
 rule make_parquet:
     input:
-        os.path.join(scratch_dir, "downloads/whole_gene/{chrom}_regions_split_0_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"),
+        os.path.join(scratch_dir, "aso/whole_gene/split_vep/{type}/{chrom}_primary_vep.txt"),
     output:
-        os.path.join(aso_data_dir, "whole_gene/maxentscan/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/vep_primary/{type}/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-12:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
+        cpus_per_task=1,
+        mem_mb=6000
     run:
         with Client() as client:
             names_list = ['CHROM', 'POS', 'REF', 'ALT', 'Consequence', 'Gene', 'Feature', 'MaxEntScan_alt', 'MaxEntScan_diff', 'MaxEntScan_ref']
             ddf = dd.read_csv(os.path.join(scratch_dir, "downloads/whole_gene/"+ wildcards.chrom + "_regions_split_*_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"), sep = "\t", names = names_list, dtype={'MaxEntScan_alt': 'object','MaxEntScan_diff': 'object', 'MaxEntScan_ref': 'object'})
             
             ddf= ddf.rename(columns={"POS": "Pos", "REF": "Allele_ref", "ALT": "Allele"})
+
+            ddf["Pos"] = ddf["Pos"].astype('Int64')
             
             ddf = ddf.repartition(partition_size="3GB")            
             
@@ -284,10 +324,10 @@ rule make_parquet:
             
 rule add_mu:
     input:
-        rate = os.path.join(aso_data_dir, "whole_gene/maxentscan/{chrom}/_metadata"),
+        rate = os.path.join(aso_data_dir, "whole_gene/vep_primary/{type}/{chrom}/_metadata"),
         mu = os.path.join(KL_data_dir, "whole_genome/mu_filtered/{chrom}/_metadata")
     output:
-        os.path.join(aso_data_dir, "whole_gene/mu/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/mu/{type}/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-12:00",
@@ -296,9 +336,9 @@ rule add_mu:
     run:
         with Client() as client:
 
-            rate = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+            rate = dd.read_parquet(input.rate.split("_metadata")[0])
 
-            mu = dd.read_parquet("/".join(input.mu.split("/")[:-1]) + "/")
+            mu = dd.read_parquet(input.mu.split("_metadata")[0])
 
             mu = mu[["Pos", "Allele", "mu"]]
 
@@ -335,10 +375,10 @@ rule add_mu:
 
 rule add_spliceAI_vcf:
     input:
-        rate = os.path.join(aso_data_dir, "whole_gene/mu/{chrom}/_metadata"),
-        spliceai = os.path.join(aso_data_dir, "spliceai/spliceai_delta_scores.raw.snv.chrom_{chrom}.tsv")
+        rate = os.path.join(aso_data_dir, "whole_gene/mu/{type}/{chrom}/_metadata"),
+        spliceai = os.path.join(scratch_dir, "downloads/spliceai/spliceai_scores.raw.snv.chrom_{chrom}.hg38.vcf")
     output:
-        os.path.join(aso_data_dir, "whole_gene/spliceai_vcf/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/spliceai_vcf/{type}/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-12:00",
@@ -347,14 +387,12 @@ rule add_spliceAI_vcf:
     run:
         with Client() as client:
             
-            rate = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+            rate = dd.read_parquet(input.rate.split("_metadata")[0])
             
-            rate["Pos"] = dd.to_numeric(rate['Pos'], errors='coerce').fillna(0).astype(int)
+            names = ["Chrom", "Pos", "ID", "Allele_ref", "Allele", "QUAL", "FILTER", "Spliceai_info"]
+            ddf = dd.read_csv(input.spliceai, sep = "\t", names = names, comment = "#", dtype={'Pos': 'Int64'})
             
-#             names = ["CHROM", "Pos", "ID","Allele_ref", "Allele", "QUAL", "FILTER", "Spliceai_info"]
-            ddf = dd.read_csv(input.spliceai, sep = "\t", comment = "#", dtype={'Pos': 'int'})
-            rate = rate.merge(ddf[["Pos", "Allele", "Spliceai_info"]], on = ["Pos", "Allele"], how = "left")
-            
+            rate = rate.merge(ddf[["Pos", "Allele_ref", "Allele", "Spliceai_info"]], on = ["Pos", "Allele_ref", "Allele"], how = "left")                        
             rate = rate.repartition(partition_size="3GB")            
             rate.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
 
@@ -362,10 +400,10 @@ rule add_spliceAI_vcf:
 
 rule add_LaBranchoR:
     input:
-        rate = os.path.join(aso_data_dir, "whole_gene/spliceai_vcf/{chrom}/_metadata"),
+        rate = os.path.join(aso_data_dir, "whole_gene/spliceai_vcf/{type}/{chrom}/_metadata"),
         labranchor = aso_data_dir + "/LaBranchoR/lstm.gencode_v19.hg19.top.bed",
     output:
-        os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{type}/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-5:00",
@@ -374,7 +412,7 @@ rule add_LaBranchoR:
     run:
         with Client() as client:
             
-            ddf = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+            ddf = dd.read_parquet(input.rate.split("_metadata")[0])
             
             names_list = ["Chrom", "start", "end", "LaBranchoR_start", "LaBranchoR_score", "strand"]
             df = pd.read_csv(aso_data_dir + "/LaBranchoR/lstm.gencode_v19.hg19.top.bed", sep = "\t", names = names_list)
@@ -399,7 +437,7 @@ rule add_LaBranchoR:
             
             df["Pos"] = df.apply(lambda row: get_range(row["hg38_min"],row["hg38_max"]), axis=1)
             df = df.explode('Pos')
-            df["Pos"] = df["Pos"].astype(int)
+            df["Pos"] = df["Pos"].astype("Int64")
             
             df["LaBranchoR_distance"] = 0
             
@@ -414,10 +452,6 @@ rule add_LaBranchoR:
             
             ddf = ddf.merge(df[["Pos", "LaBranchoR_score", "LaBranchoR_distance"]], on = "Pos", how = "left")
             
-            ddf["Pos"] = dd.to_numeric(ddf['Pos'], errors='coerce').fillna(0).astype(int)
-#             ddf["LaBranchoR_start"] = dd.to_numeric(ddf['LaBranchoR_start'], errors='coerce').fillna(0).astype(float)
-#             ddf["LaBranchoR_score"] = dd.to_numeric(ddf['LaBranchoR_score'], errors='coerce').fillna(0).astype(float)
-
             ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True) 
             
         
@@ -437,10 +471,10 @@ rule add_LaBranchoR:
 
 rule add_revel:
     input:
-        rate = os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{chrom}/_metadata"),
+        rate = os.path.join(aso_data_dir, "whole_gene/LaBranchoR/{type}/{chrom}/_metadata"),
         revel = aso_data_dir + "/revel/revel_with_transcript_ids",
     output:
-        os.path.join(aso_data_dir, "whole_gene/revel/{chrom}/_metadata"),
+        os.path.join(aso_data_dir, "whole_gene/revel/{type}/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-3:00",
@@ -459,7 +493,7 @@ rule add_revel:
             
             revel = revel.compute()
             revel = revel[revel["Pos"] != "."]
-            revel["Pos"] = revel["Pos"].astype(int)
+            revel["Pos"] = revel["Pos"].astype("Int64")
             
             ddf = ddf.merge(revel[["Pos", "Allele", "REVEL", "REVEL_transcriptid"]], on = ["Pos", "Allele"], how = "left")
             
@@ -529,29 +563,29 @@ rule clinvar_to_tsv:
             
 #             ddf = ddf.drop_duplicates(["Pos", "Allele", "Gene"])
 
-rule download_gnomad_v4:
-    input:
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=500
-    output:
-        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz")
-    shell:
-        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz"
+# rule download_gnomad_v4:
+#     input:
+#     resources:
+#         partition="short",
+#         runtime="0-1:00",
+#         cpus_per_task=1,
+#         mem_mb=500
+#     output:
+#         os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz")
+#     shell:
+#         "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz"
                 
-rule download_gnomad_v4_tbi:
-    input:
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=1,
-        mem_mb=500
-    output:
-        os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
-    shell:
-        "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz.tbi"
+# rule download_gnomad_v4_tbi:
+#     input:
+#     resources:
+#         partition="short",
+#         runtime="0-1:00",
+#         cpus_per_task=1,
+#         mem_mb=500
+#     output:
+#         os.path.join(scratch_dir, "downloads/gnomad.exomes.v4.0.sites.chr{chrom}.vcf.bgz.tbi")
+#     shell:
+#         "wget -P /n/scratch/users/d/djl34/downloads/ https://storage.googleapis.com/gcp-public-data--gnomad/release/4.0/vcf/exomes/gnomad.exomes.v4.0.sites.chr{wildcards.chrom}.vcf.bgz.tbi"
                 
         
             
@@ -707,6 +741,28 @@ rule AR_lof_genes:
 #     run:
 
 ############### from the genes, get the variants
+
+rule get_gene_variants:
+    input:
+        rate = os.path.join(aso_data_dir, "whole_gene/revel/3/_metadata"),
+    output:
+        os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
+    resources:
+        partition="short",
+        runtime="0-2:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
+            
+            #read variants file
+            variants = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
+
+            variants = variants[variants["Gene"] == 'ENSG00000163930']
+                        
+            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+        
+
 
 rule gene_to_variants:
     input:
