@@ -38,38 +38,55 @@ wildcard_constraints:
     
 per_generation_factor = 1.015 * 10 **-7
 
-include: "/home/djl34/kl_git/preprocessing/download/Snakefile"
+include: "/home/djl34/kl_git/workflow/preprocessing/download/Snakefile"
 
 base_set = ["A", "C", "T", "G"]
 all_chrom_set = [str(x) for x in range(1, 23)]
-chrom_set = ["3"]
-
-print(chrom_set)
+chrom_set = all_chrom_set
 
 ##############################################################################################################################
 
 type_list = ["ad_lof", "sd_lof", "ar_lof"]
-type_list = ["ad_lof", "ar_lof"]
+# type_list = ["ad_lof", "ar_lof"]
+
+pair_list = [(chrom, type) for chrom in chrom_set for type in type_list]
+
+#remove chromosomes for sd_lof with no chromsoomes
+type = "sd_lof"
+sd_lof_chrom_list = []
+for chrom in chrom_set:
+    filename = os.path.join(aso_data_dir, f"genes_category/{type}/biomart/{chrom}.tsv")
+    with open(filename, 'r') as fp:
+        lines = len(fp.readlines())
+        if lines == 0:
+            pair_list.remove((chrom, type))
+        else:
+            sd_lof_chrom_list.append(chrom)
+
+print(sd_lof_chrom_list)
 
 
 filename_list = [os.path.join(aso_data_dir, "genes_category/{type}/biomart/{chrom}.tsv"),
                  os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf"),
                  os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
-                 os.path.join(aso_data_dir, "whole_gene/revel/{type}/{chrom}/_metadata")]
+                 os.path.join(aso_data_dir, "whole_gene/revel/{type}/{chrom}/_metadata"),
+                 os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_{chrom}.tsv"),
+                 os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_{chrom}.tsv"),
+                 ]
 
-filename_list = [filename.format(type = type, chrom = chrom) for filename in filename_list for chrom in chrom_set for type in type_list]
+filename_list = [filename.format(type = pair[1], chrom = pair[0]) for filename in filename_list for pair in pair_list]
 
-print(chrom_set)
+# print(chrom_set)
 
 # os.path.join(aso_data_dir, "whole_gene/mut_model/{type}/{chrom}.vcf")
 
 rule all:
     input:
-        filename_list,
-        # os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
-        # os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
-        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
-        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # filename_list,
+        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
+        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
         # os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
 
 
@@ -283,9 +300,11 @@ rule run_vep_maxentscan_whole_gene:
         
 rule run_split_vep:
     input:
-        os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
+        file = os.path.join(aso_data_dir, "whole_gene/vep_maxentscan/{type}/{chrom}_vep.vcf"),
+        new_header = os.path.join(aso_data_dir, "new_header")
     output:
-        os.path.join(scratch_dir, "aso/whole_gene/split_vep/{type}/{chrom}_primary_vep.txt"),
+        new_header_vcf = os.path.join(scratch_dir, "aso/whole_gene/split_vep/{type}/{chrom}_vep_new_header.vcf"),
+        tsv_file = os.path.join(scratch_dir, "aso/whole_gene/split_vep/{type}/{chrom}_primary_vep.txt"),
     resources:
         partition="short",
         runtime="0-12:00",
@@ -294,7 +313,8 @@ rule run_split_vep:
     shell:
 #-s primary picks all of the canonical variants
         """
-        bcftools +split-vep {input} -f '%CHROM\t%POS\t%REF\t%ALT\t%MR\t%Consequence\t%Gene\t%Feature\t%MaxEntScan_alt\t%MaxEntScan_diff\t%MaxEntScan_ref\n' -s primary > {output}
+        bcftools reheader -h {input.new_header} -o {output.new_header_vcf} {input.file}
+        bcftools +split-vep {output.new_header_vcf} -d -f '%CHROM\t%POS\t%REF\t%ALT\t%Consequence\t%Gene\t%Feature\t%CANONICAL\t%MaxEntScan_alt\t%MaxEntScan_diff\t%MaxEntScan_ref\n' > {output.tsv_file}
         """
         
 rule make_parquet:
@@ -309,16 +329,17 @@ rule make_parquet:
         mem_mb=6000
     run:
         with Client() as client:
-            names_list = ['CHROM', 'POS', 'REF', 'ALT', 'Consequence', 'Gene', 'Feature', 'MaxEntScan_alt', 'MaxEntScan_diff', 'MaxEntScan_ref']
-            ddf = dd.read_csv(os.path.join(scratch_dir, "downloads/whole_gene/"+ wildcards.chrom + "_regions_split_*_rate_v5.2_TFBS_correction_wholegene.MaxEntScan.txt"), sep = "\t", names = names_list, dtype={'MaxEntScan_alt': 'object','MaxEntScan_diff': 'object', 'MaxEntScan_ref': 'object'})
-            
-            ddf= ddf.rename(columns={"POS": "Pos", "REF": "Allele_ref", "ALT": "Allele"})
-
+            names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'Consequence', 'Gene', 'Feature', 'CANONICAL', 
+                          'MaxEntScan_alt', 'MaxEntScan_diff', 'MaxEntScan_ref']
+            ddf = dd.read_csv(input[0], sep = "\t", names = names_list, 
+                              dtype={'MaxEntScan_alt': 'object','MaxEntScan_diff': 'object', 'MaxEntScan_ref': 'object'})
             ddf["Pos"] = ddf["Pos"].astype('Int64')
+
+            ddf = ddf[ddf["CANONICAL"] == "YES"]
             
-            ddf = ddf.repartition(partition_size="3GB")            
+            ddf = ddf.repartition(partition_size="3GB")
             
-            ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+            ddf.to_parquet(output[0].split("_metadata")[0], write_index = False, compression = "gzip", write_metadata_file = True)
 
 ###################################################### for mu #########################################################
             
@@ -339,8 +360,8 @@ rule add_mu:
             rate = dd.read_parquet(input.rate.split("_metadata")[0])
 
             mu = dd.read_parquet(input.mu.split("_metadata")[0])
-
             mu = mu[["Pos", "Allele", "mu"]]
+            mu["Pos"] = mu["Pos"].astype("Int64")
 
             rate = rate.merge(mu, on = ["Pos", "Allele"], how = "left")
 
@@ -407,8 +428,8 @@ rule add_LaBranchoR:
     resources:
         partition="short",
         runtime="0-5:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
+        cpus_per_task=1,
+        mem_mb=6000
     run:
         with Client() as client:
             
@@ -417,39 +438,39 @@ rule add_LaBranchoR:
             names_list = ["Chrom", "start", "end", "LaBranchoR_start", "LaBranchoR_score", "strand"]
             df = pd.read_csv(aso_data_dir + "/LaBranchoR/lstm.gencode_v19.hg19.top.bed", sep = "\t", names = names_list)
             df = df[df["Chrom"] == "chr" + wildcards.chrom]
-            
-            df["hg38_start"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["start"]), axis=1)
-            df["hg38_end"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["end"]), axis=1)
-            
-            #b/c it is 0 based
-            def get_range(start, end):
-                return range(start + 1, end + 1)
-            
-            df = df[df["hg38_start"].isna() == False]
-            df = df[df["hg38_end"].isna() == False]
-            
-            df["hg38_start"] = df["hg38_start"].astype(int)
-            df["hg38_end"] = df["hg38_end"].astype(int)
-            
-            df['hg38_min'] = df[['hg38_start','hg38_end']].min(axis=1)
-            df['hg38_max'] = df[['hg38_start','hg38_end']].max(axis=1)
 
+            # get hg38 position for branchpoint, use end b/c it is zero based
+            df["Pos"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["end"]), axis=1)
+            # df["hg38_end"] = df.apply(lambda row: genomic.get_hg38_pos(row["Chrom"], row["end"]), axis=1)
             
-            df["Pos"] = df.apply(lambda row: get_range(row["hg38_min"],row["hg38_max"]), axis=1)
-            df = df.explode('Pos')
+            # #b/c it is 0 based
+            # def get_range(start, end):
+            #     return range(start + 1, end + 1)
+            
+            # df = df[df["hg38_start"].isna() == False]
+            # df = df[df["hg38_end"].isna() == False]
+            
+            # df["hg38_start"] = df["hg38_start"].astype(int)
+            # df["hg38_end"] = df["hg38_end"].astype(int)
+            
+            # df['hg38_min'] = df[['hg38_start','hg38_end']].min(axis=1)
+            # df['hg38_max'] = df[['hg38_start','hg38_end']].max(axis=1)            
+            # df["Pos"] = df.apply(lambda row: get_range(row["hg38_min"],row["hg38_max"]), axis=1)
+
+            # df["Pos"] = df.apply(lambda row: get_range(row["hg38_start"],row["hg38_end"]), axis=1)            
+            # df = df.explode('Pos')
             df["Pos"] = df["Pos"].astype("Int64")
             
             df["LaBranchoR_distance"] = 0
+
+            df_nearby = df.copy()
             
             for distance in [-3, -2, -1, 1, 2, 3]:
-                df_nearby = df.copy()
-                
                 df_nearby["LaBranchoR_distance"] = distance
                 df_nearby["Pos"] = df_nearby["Pos"] + distance
                 
                 df = pd.concat([df, df_nearby])
                 
-            
             ddf = ddf.merge(df[["Pos", "LaBranchoR_score", "LaBranchoR_distance"]], on = "Pos", how = "left")
             
             ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True) 
@@ -478,7 +499,7 @@ rule add_revel:
     resources:
         partition="short",
         runtime="0-3:00",
-        cpus_per_task=5,
+        cpus_per_task=3,
         mem_mb=get_mem_mb
     run:
         with Client() as client:
@@ -494,10 +515,12 @@ rule add_revel:
             revel = revel.compute()
             revel = revel[revel["Pos"] != "."]
             revel["Pos"] = revel["Pos"].astype("Int64")
+
+            revel = revel.assign(Feature=revel['REVEL_transcriptid'].str.split(';')).explode('Feature')
             
-            ddf = ddf.merge(revel[["Pos", "Allele", "REVEL", "REVEL_transcriptid"]], on = ["Pos", "Allele"], how = "left")
+            ddf = ddf.merge(revel[["Pos", "Allele", "REVEL", "Feature"]], on = ["Pos", "Allele", "Feature"], how = "left")
             
-            ddf = ddf.repartition(partition_size="3GB")            
+            ddf = ddf.repartition(partition_size="3GB")
 
             ddf.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
             
@@ -622,7 +645,7 @@ rule AD_lof_genes:
     resources:
         partition="short",
         runtime="0-12:00",
-        cpus_per_task=5,
+        cpus_per_task=3,
         mem_mb=get_mem_mb
     run:
         #get list of genes that are ad and lof
@@ -767,13 +790,13 @@ rule get_gene_variants:
 rule gene_to_variants:
     input:
         gene = os.path.join(aso_data_dir, "genes_category/{type}.tsv"),
-        rate = os.path.join(aso_data_dir, "whole_gene/revel/{chrom}/_metadata"),
+        rate = os.path.join(aso_data_dir, "whole_gene/revel/{type}/{chrom}/_metadata"),
     output:
         os.path.join(aso_data_dir, "genes_category/{type}/variants/{chrom}/_metadata"),
     resources:
         partition="short",
         runtime="0-2:00",
-        cpus_per_task=5,
+        cpus_per_task=3,
         mem_mb=get_mem_mb
     run:
         with Client() as client:
@@ -836,34 +859,34 @@ rule process_file:
             variants["MaxEntScan_alt"] = dd.to_numeric(variants['MaxEntScan_alt'], errors='coerce').fillna(0.0)
             variants["MaxEntScan_ref"] = dd.to_numeric(variants['MaxEntScan_ref'], errors='coerce').fillna(0.0)
             
-            variants = variants.drop(columns=['REVEL_transcriptid', 'SYMBOL', 'DP_AG', 'DP_AL', 'DP_DG', 'DP_DL'])
+            variants = variants.drop(columns=['SYMBOL', 'DP_AG', 'DP_AL', 'DP_DG', 'DP_DL'])
                                     
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", 
                                 write_metadata_file = True, 
                                 schema={"MaxEntScan_alt": pa.float64(), "MaxEntScan_ref": pa.float64()})
 
-rule add_AF:
-    input:
-        rate = os.path.join(aso_data_dir, "genes_category/{type}/process/{chrom}/_metadata"),
-        add = os.path.join(KL_data_dir, "whole_genome/filtered/{chrom}/_metadata")
-    output:
-        os.path.join(aso_data_dir, "genes_category/{type}/AF/{chrom}/_metadata")
-    resources:
-        partition="short",
-        runtime="0-1:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb_AF
-    run:
-        with Client() as client:
-            variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
+# rule add_AF:
+#     input:
+#         rate = os.path.join(aso_data_dir, "genes_category/{type}/process/{chrom}/_metadata"),
+#         add = os.path.join(KL_data_dir, "whole_genome/filtered/{chrom}/_metadata")
+#     output:
+#         os.path.join(aso_data_dir, "genes_category/{type}/AF/{chrom}/_metadata")
+#     resources:
+#         partition="short",
+#         runtime="0-1:00",
+#         cpus_per_task=5,
+#         mem_mb=get_mem_mb_AF
+#     run:
+#         with Client() as client:
+#             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
 
-            ddf = dd.read_parquet("/".join(input[1].split("/")[:-1]) + "/")
+#             ddf = dd.read_parquet("/".join(input[1].split("/")[:-1]) + "/")
 
-            variants["Pos"] = variants["Pos"].astype('Int64')
+#             variants["Pos"] = variants["Pos"].astype('Int64')
 
-            variants = variants.merge(ddf[["Pos", "Allele", 'AF']], on = ["Pos", "Allele"], how = "left")
+#             variants = variants.merge(ddf[["Pos", "Allele", 'AF']], on = ["Pos", "Allele"], how = "left")
 
-            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+#             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
 
 rule add_clinVar:
     input:
@@ -894,11 +917,38 @@ rule add_clinVar:
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
 
 
+rule add_Loftee:
+    input:
+        rate = os.path.join(aso_data_dir, "aso/genes_category/{type}/clinvar/{chrom}/_metadata"),
+        loftee = os.path.join(KL_data_dir, "whole_exome/nonsense/HC_{chrom}.tsv")
+    output:
+        os.path.join(aso_data_dir, "aso/genes_category/{type}/loftee/{chrom}/_metadata"),
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb_AF
+    run:
+        with Client() as client:
+            variants = dd.read_parquet(input.rate.split("_metadata")[0])
+
+            # names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'CLNDN', 'CLNDISDB', 'CLNSIG', 'CLNSIGCONF', 'GENEINFO']            
+            loftee = dd.read_csv(input.loftee, sep = "\t",dtype={'filter_gnomADv4': 'object'})
+            loftee["Pos"] = loftee["Pos"].astype('Int64')
+            
+            variants = variants.merge(loftee[["Pos", "Allele_ref", "Allele", "LoF"]], on = ["Pos", "Allele_ref", "Allele"], how = "left")
+
+            variants = variants.repartition(partition_size="3GB")  
+
+            variants.to_parquet(output[0].split("_metadata")[0], write_index = False, compression = "gzip", write_metadata_file = True)
+
+
+
             
 ############################################### calculate splicing probability ###############################################       
 rule add_splicing_info:
     input:
-        os.path.join(aso_data_dir, "aso/genes_category/{type}/clinvar/{chrom}/_metadata")
+        os.path.join(aso_data_dir, "aso/genes_category/{type}/loftee/{chrom}/_metadata")
     output:
         os.path.join(aso_data_dir, "genes_category/{type}/splice/{chrom}/_metadata")
     resources:
@@ -910,7 +960,8 @@ rule add_splicing_info:
         with Client() as client:
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
 
-            variants["canonical_splice_site"] = variants["Consequence"].str.contains("splice_(acceptor|donor)_variant")
+            variants["canonical_splice_site"] = (variants["Consequence"].str.contains("splice_(acceptor|donor)_variant") & 
+                                                 (variants["LoF"] == "HC"))
 
             variants["spliceAI_loss_pass"] = (variants["DS_AL"] >= 0.1) | (variants["DS_DL"] >= 0.1)
             variants["spliceAI_gain_pass"] = (variants["DS_AG"] >= 0.1) | (variants["DS_DG"] >= 0.1)
@@ -939,8 +990,8 @@ rule add_splicing_info:
             ##check whether misplicing gain
             ##spliceAI donor/ acceptor gain score at a non-canonical site ≥ 0.1 AND (ii) MaxEntScan donor/acceptor score with the ALT allele at the site ≥ 2.
 
-            variants["misplicing_gain"] = (~variants["canonical_splice_site"] & variants["spliceAI_gain_pass"]
-                                          & (variants["MaxEntScan_alt"] >= 2))
+            variants["misplicing_gain"] = (~variants["canonical_splice_site"] & variants["spliceAI_gain_pass"] & 
+                                           (variants["MaxEntScan_alt"] >= 2))
             #(2) Exon skipping or intron retention (skipping or retention): SpliceAI donor/acceptor loss score at any canonical site ≥ 0.1 without an accompanying gain of mis-splicing by SpliceAI (donor/acceptor gain score < 0.1 at any non-canonical splice site).
 
             variants["exon_skipping"] = (variants["canonical_splice_site"] & variants["spliceAI_loss_pass"])
@@ -984,7 +1035,8 @@ rule damage_protein_and_others:
             variants = variants[~variants["clinvar_benign"]]
 
             #protein_coding severity
-            variants["protein_coding_severe"] = variants["Consequence"].str.contains("(start_lost|stop_gained)")
+            # variants["protein_coding_severe"] = variants["Consequence"].str.contains("(start_lost|stop_gained)")
+            variants["protein_coding_severe"] = variants["Consequence"].str.contains("stop_gained") & (variants["LoF"] == "HC")
             variants["protein_coding_severe_missense"] = (variants["REVEL"] > 0.5)
 
             # get lof severe and moderate
@@ -1013,37 +1065,71 @@ rule AD_lof_pergene:
     resources:
         partition="short",
         runtime="0-1:00",
-        cpus_per_task=5,
+        cpus_per_task=2,
         mem_mb=get_mem_mb
     run:
         with Client() as client:
             per_generation_factor = 1.015 * 10 **-7
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
 
+            variants = variants.drop_duplicates(subset = ['Pos', "Allele_ref", "Allele", "Gene"])
+
             variants = variants[~variants["common_variant_.1%"]]
             
-            variants = variants[["Gene", "mu", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping", "exon_skipping_rate"]]
+            variants = variants[["Gene", "mu", "lof_severe", "lof_moderate", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping", "exon_skipping_rate"]]
             
-            variants = variants[variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
+            variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
             
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"].fillna(0)
             
+            variants["lof_severe"] = variants["lof_severe"] * variants["mu"] * per_generation_factor
+            variants["lof_moderate"] = variants["lof_moderate"] * variants["mu"] * per_generation_factor
             variants["probably_amenable"] = variants["probably_amenable"] * variants["mu"] * per_generation_factor
             variants["possibly_amenable_gain"] = variants["possibly_amenable_gain"] * variants["mu"] * per_generation_factor
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"] * variants["exon_skipping_rate"] * variants["mu"] * per_generation_factor
 
-            variants_bygene = variants[["Gene", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping"]].groupby("Gene").sum()
+            variants_bygene = variants[["Gene", "lof_severe", "lof_moderate", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping"]].groupby("Gene").sum()
             
             variants_bygene = variants_bygene.reset_index()
             
             variants_bygene.to_csv(output[0], sep = "\t", index = None)
 
 
-rule pergene_combine:
+rule pergene_combine_ad_lof:
     input:
-        [os.path.join(aso_data_dir, f"genes_category/{{type}}/pergene_{chrom}.tsv") for chrom in all_chrom_set]
+        [os.path.join(aso_data_dir, f"genes_category/ad_lof/{{type}}/pergene_{chrom}.tsv") for chrom in all_chrom_set]
     output:
-        os.path.join(aso_data_dir, "genes_category/{type}/pergene_all.tsv")
+        os.path.join(aso_data_dir, "genes_category/ad_lof/{type}/pergene_all.tsv")
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
+            ddf = dd.read_csv(input, sep = "\t")
+            ddf.to_csv(output[0], sep = "\t", single_file = True, index = None)
+
+rule pergene_combine_ar_lof:
+    input:
+        [os.path.join(aso_data_dir, f"genes_category/ar_lof/{{type}}/pergene_{chrom}.tsv") for chrom in all_chrom_set]
+    output:
+        os.path.join(aso_data_dir, "genes_category/ar_lof/{type}/pergene_all.tsv")
+    resources:
+        partition="short",
+        runtime="0-1:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
+            ddf = dd.read_csv(input, sep = "\t")
+            ddf.to_csv(output[0], sep = "\t", single_file = True, index = None)
+
+rule pergene_combine_sd_lof:
+    input:
+        [os.path.join(aso_data_dir, f"genes_category/sd_lof/{{type}}/pergene_{chrom}.tsv") for chrom in sd_lof_chrom_list]
+    output:
+        os.path.join(aso_data_dir, "genes_category/sd_lof/{type}/pergene_all.tsv")
     resources:
         partition="short",
         runtime="0-1:00",
@@ -1064,13 +1150,13 @@ rule AR_lof_pergene:
     resources:
         partition="short",
         runtime="0-1:00",
-        cpus_per_task=5,
+        cpus_per_task=2,
         mem_mb=get_mem_mb
     run:
         with Client() as client:
             per_generation_factor = 1.015 * 10 **-7
             variants = dd.read_parquet("/".join(input[0].split("/")[:-1]) + "/")
-            
+            variants = variants.drop_duplicates(subset = ['Pos', "Allele_ref", "Allele", "Gene"])
             ## filter for common variants (less stringent than AD)
             variants = variants[~variants["common_variant_1%"]]
 
@@ -1078,6 +1164,11 @@ rule AR_lof_pergene:
             #get various rates
             ## remove overlap between lof_moderate and exon_skipping
             variants["lof_moderate"] = (variants["lof_moderate"]) & (~variants["possibly_amenable_skipping"])
+
+            variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
+
+            variants["mu"] = variants["mu"] * per_generation_factor
+
             
             variants["mu"] = variants["mu"].where(~variants["possibly_amenable_skipping"], variants["mu"] * variants["exon_skipping_rate"])
             variants["mu"] = variants["mu"] * per_generation_factor
