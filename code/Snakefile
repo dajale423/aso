@@ -84,7 +84,8 @@ rule all:
     input:
         # filename_list,
         os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # os.path.join(aso_data_dir, "genes_category/ad_lof/gene_variants/15/ENSG00000166147.tsv")
         # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
         # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
         # os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
@@ -765,28 +766,6 @@ rule AR_lof_genes:
 
 ############### from the genes, get the variants
 
-rule get_gene_variants:
-    input:
-        rate = os.path.join(aso_data_dir, "whole_gene/revel/3/_metadata"),
-    output:
-        os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
-    resources:
-        partition="short",
-        runtime="0-2:00",
-        cpus_per_task=5,
-        mem_mb=get_mem_mb
-    run:
-        with Client() as client:
-            
-            #read variants file
-            variants = dd.read_parquet("/".join(input.rate.split("/")[:-1]) + "/")
-
-            variants = variants[variants["Gene"] == 'ENSG00000163930']
-                        
-            variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
-        
-
-
 rule gene_to_variants:
     input:
         gene = os.path.join(aso_data_dir, "genes_category/{type}.tsv"),
@@ -1017,7 +996,7 @@ rule damage_protein_and_others:
         os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
     resources:
         partition="short",
-        runtime="0-1:00",
+        runtime="0-0:10",
         cpus_per_task=5,
         mem_mb=get_mem_mb
     run:
@@ -1034,6 +1013,9 @@ rule damage_protein_and_others:
             variants["clinvar_benign"] = (variants["CLNSIG"].str.contains("benign")) | (variants["CLNSIGCONF"].str.contains("benign"))
             variants = variants[~variants["clinvar_benign"]]
 
+            ## filter for pathogenic variants in clinvar
+            variants["clinvar_pathogenic"] = variants["CLNSIG"].str.contains("(Likely_pathogenic|Pathogenic)")
+            
             #protein_coding severity
             # variants["protein_coding_severe"] = variants["Consequence"].str.contains("(start_lost|stop_gained)")
             variants["protein_coding_severe"] = variants["Consequence"].str.contains("stop_gained") & (variants["LoF"] == "HC")
@@ -1042,19 +1024,39 @@ rule damage_protein_and_others:
             # get lof severe and moderate
             variants["lof_severe"] = variants["splice_destroying_severe"] | variants["protein_coding_severe"] | variants["protein_coding_severe_missense"]
 
-            variants["lof_moderate"] = variants["splice_destroying_moderate"] & ~variants["lof_severe"]
-
-            ##get probably_amenable variants
-            variants["probably_amenable"] = ~variants["lof_severe"] & ~variants["lof_moderate"] & variants["misplicing_gain"]
-
             ##get possibly_amenable variants
-            variants["possibly_amenable_gain"] = variants["lof_moderate"] & variants["misplicing_gain"]
+            # variants["possibly_amenable_gain"] = variants["lof_moderate"] & variants["misplicing_gain"]
             variants["possibly_amenable_skipping"] = ~variants["lof_severe"] & variants["exon_skipping"]
+            ##get probably_amenable variants
+            variants["probably_amenable"] = ~variants["lof_severe"] & variants["misplicing_gain"]
 
+            # add non severe, non possibly amenable skipping as possibly amenable skipping
+            variants["lof_moderate"] = variants["splice_destroying_moderate"] & ~variants["lof_severe"] & ~variants["possibly_amenable_skipping"]
+            
             variants = variants.repartition(partition_size="3GB")  
             
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
+
+
+rule get_gene_variants:
+    input:
+        rate = os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
+    output:
+        os.path.join(aso_data_dir, "genes_category/{type}/gene_variants/{chrom}/{gene_name}.tsv")
+    resources:
+        partition="short",
+        runtime="0-2:00",
+        cpus_per_task=5,
+        mem_mb=get_mem_mb
+    run:
+        with Client() as client:
             
+            #read variants file
+            variants = dd.read_parquet(input.rate.split("_metadata")[0])
+            variants = variants[variants["Gene"] == wildcards.gene_name]
+            variants.to_csv(output[0], sep = "\t", index = None, single_file = True)
+        
+
 
 ######################################### pergene calculation  #######################################################
 
@@ -1066,9 +1068,9 @@ rule AD_lof_pergene:
         os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_{chrom}.tsv")
     resources:
         partition="short",
-        runtime="0-1:00",
+        runtime="0-0:10",
         cpus_per_task=2,
-        mem_mb=get_mem_mb
+        mem_mb=20000
     run:
         with Client() as client:
             per_generation_factor = 1.015 * 10 **-7
@@ -1078,20 +1080,21 @@ rule AD_lof_pergene:
 
             variants = variants[~variants["common_variant_.1%"]]
             
-            variants = variants[["Gene", "mu", "lof_severe", "lof_moderate", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping", "exon_skipping_rate"]]
+            variants = variants[["Gene", "mu", "lof_severe", "lof_moderate", "probably_amenable", "possibly_amenable_skipping", "exon_skipping_rate"]]
             
-            variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
+            variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_skipping"]].compute()
             
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"].fillna(0)
-            
+
             variants["lof_severe"] = variants["lof_severe"] * variants["mu"] * per_generation_factor
             variants["lof_moderate"] = variants["lof_moderate"] * variants["mu"] * per_generation_factor
             variants["probably_amenable"] = variants["probably_amenable"] * variants["mu"] * per_generation_factor
-            variants["possibly_amenable_gain"] = variants["possibly_amenable_gain"] * variants["mu"] * per_generation_factor
             variants["possibly_amenable_skipping"] = variants["possibly_amenable_skipping"] * variants["exon_skipping_rate"] * variants["mu"] * per_generation_factor
-
-            variants_bygene = variants[["Gene", "lof_severe", "lof_moderate", "probably_amenable", "possibly_amenable_gain", "possibly_amenable_skipping"]].groupby("Gene").sum()
             
+            variants["lof_probability"] = variants["lof_severe"] + 0.5 * (variants["lof_moderate"] + variants["probably_amenable"] + variants["possibly_amenable_skipping"])
+            
+            variants_bygene = variants[["Gene", "lof_probability", "lof_severe", "lof_moderate", "probably_amenable",
+                                        "possibly_amenable_skipping"]].groupby("Gene").sum()
             variants_bygene = variants_bygene.reset_index()
             
             variants_bygene.to_csv(output[0], sep = "\t", index = None)
@@ -1167,7 +1170,7 @@ rule AR_lof_pergene:
 
             variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
 
-            variants["mu"] = variants["mu"] * per_generation_factor
+            # variants["mu"] = variants["mu"] * per_generation_factor
 
             
             variants["mu"] = variants["mu"].where(~variants["possibly_amenable_skipping"], variants["mu"] * variants["exon_skipping_rate"])
