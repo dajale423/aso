@@ -85,8 +85,8 @@ rule all:
         # filename_list,
         os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "ad_lof"),
         os.path.join(aso_data_dir, "genes_category/{type}/ad_rate/pergene_all.tsv").format(type = "sd_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
-        os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "ar_lof"),
+        # os.path.join(aso_data_dir, "genes_category/{type}/ar_rate/pergene_all.tsv").format(type = "sd_lof"),
         # os.path.join(aso_data_dir, "whole_gene/ENSG00000163930/_metadata"),
 
 
@@ -933,7 +933,7 @@ rule add_Loftee:
             variants = dd.read_parquet(input.rate.split("_metadata")[0])
 
             # names_list = ['Chrom', 'Pos', 'Allele_ref', 'Allele', 'CLNDN', 'CLNDISDB', 'CLNSIG', 'CLNSIGCONF', 'GENEINFO']            
-            loftee = dd.read_csv(input.loftee, sep = "\t",dtype={'filter_gnomADv4': 'object'})
+            loftee = dd.read_csv(input.loftee, sep = "\t", dtype={'filter_gnomADv4': 'object'})
             loftee["Pos"] = loftee["Pos"].astype('Int64')
             
             variants = variants.merge(loftee[["Pos", "Allele_ref", "Allele", "LoF"]], on = ["Pos", "Allele_ref", "Allele"], how = "left")
@@ -1056,7 +1056,9 @@ rule damage_protein_and_others:
             variants.to_parquet("/".join(output[0].split("/")[:-1]), write_index = False, compression = "gzip", write_metadata_file = True)
             
 
-######################################### pergene calculation for AD #######################################################
+######################################### pergene calculation  #######################################################
+
+
 rule AD_lof_pergene:
     input:
         rate = os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
@@ -1139,9 +1141,7 @@ rule pergene_combine_sd_lof:
         with Client() as client:
             ddf = dd.read_csv(input, sep = "\t")
             ddf.to_csv(output[0], sep = "\t", single_file = True, index = None)
-            
-######################################### pergene calculation  #######################################################
-            
+                        
 rule AR_lof_pergene:
     input:
         rate = os.path.join(aso_data_dir, "genes_category/{type}/probably_possibly_amenable/{chrom}/_metadata"),
@@ -1150,7 +1150,7 @@ rule AR_lof_pergene:
     resources:
         partition="short",
         runtime="0-1:00",
-        cpus_per_task=2,
+        cpus_per_task=1,
         mem_mb=get_mem_mb
     run:
         with Client() as client:
@@ -1163,7 +1163,7 @@ rule AR_lof_pergene:
 
             #get various rates
             ## remove overlap between lof_moderate and exon_skipping
-            variants["lof_moderate"] = (variants["lof_moderate"]) & (~variants["possibly_amenable_skipping"])
+            # variants["lof_moderate"] = (variants["lof_moderate"]) & (~variants["possibly_amenable_skipping"])
 
             variants = variants[variants["lof_severe"] | variants["lof_moderate"] | variants["probably_amenable"] | variants["possibly_amenable_gain"] | variants["possibly_amenable_skipping"]].compute()
 
@@ -1173,16 +1173,16 @@ rule AR_lof_pergene:
             variants["mu"] = variants["mu"].where(~variants["possibly_amenable_skipping"], variants["mu"] * variants["exon_skipping_rate"])
             variants["mu"] = variants["mu"] * per_generation_factor
             
-            variants_lof_severe = variants[variants["lof_severe"]].compute()
+            variants_lof_severe = variants[variants["lof_severe"]]
             variants_lof_severe = variants_lof_severe[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
 
-            variants_lof_moderate = variants[variants["lof_moderate"]].compute()
+            variants_lof_moderate = variants[variants["lof_moderate"]]
             variants_lof_moderate = variants_lof_moderate[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
             
-            variants_lof_probably_amenable = variants[variants["probably_amenable"]].compute()
+            variants_lof_probably_amenable = variants[variants["probably_amenable"]]
             variants_lof_probably_amenable = variants_lof_probably_amenable[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
 
-            variants_possibly_amenable_skipping = variants[variants["possibly_amenable_skipping"]].compute()
+            variants_possibly_amenable_skipping = variants[variants["possibly_amenable_skipping"]]
             variants_possibly_amenable_skipping = variants_possibly_amenable_skipping[["Gene", "mu", "AF"]].groupby("Gene").sum().reset_index()
           
             
